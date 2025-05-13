@@ -32,7 +32,21 @@ export class VideoUploadServiceStack extends cdk.Stack {
     });
 
     const upload = api.root.addResource('upload');
-    upload.addMethod('POST', new apigateway.LambdaIntegration(videoLambda));
+    upload.addMethod(
+      'POST',
+      new apigateway.LambdaIntegration(videoLambda),
+      {
+        apiKeyRequired: true,
+      });
+
+    const key = api.addApiKey('UploadApiKey');
+    const usagePlan = api.addUsagePlan('UploadUsagePlan', {
+      name: 'FreeTierPlan',
+      throttle: { rateLimit: 5, burstLimit: 2 },
+      apiStages: [{ api, stage: api.deploymentStage }],
+    });
+
+    usagePlan.addApiKey(key);
 
     // Output API endpoint
     new cdk.CfnOutput(this, 'UploadEndpoint', {
