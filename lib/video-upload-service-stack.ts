@@ -1,7 +1,9 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as s3n from 'aws-cdk-lib/aws-s3-notifications'
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
@@ -26,6 +28,13 @@ export class VideoUploadServiceStack extends cdk.Stack {
       },
     });
 
+    //lambda layer for ffmpeg
+    const ffmpegLayer = new lambda.LayerVersion(this, 'FfmpegLayer', {
+      code: lambda.Code.fromAsset(join(__dirname, '../lambda-layers/ffmpeg')),
+      compatibleRuntimes: [lambda.Runtime.NODEJS_22_X],
+      description: 'FFmpeg binary for thumbnail generation',
+    });
+
     const videoLambda = new lambda.Function(this, 'DownloadAndUploadLambda', {
       runtime: lambda.Runtime.NODEJS_22_X,
       handler: 'index.handler',
@@ -42,7 +51,33 @@ export class VideoUploadServiceStack extends cdk.Stack {
     // Allow lambda to write to the S3 bucket
     bucket.grantPut(videoLambda);
 
-    // 3. API Gateway
+    const postProcessingLambda = new NodejsFunction(this, 'PostProcessingLambda', {
+      runtime: lambda.Runtime.NODEJS_22_X,
+      entry: join(__dirname, '../lambda/post-processing/index.js'),
+      handler: 'handler',
+      memorySize: 1024,
+      timeout: cdk.Duration.minutes(2),
+      environment: {
+        BUCKET_NAME: bucket.bucketName,
+        FFMPEG_PATH: '/opt/bin/ffmpeg', // from your layer
+      },
+      layers: [ffmpegLayer],
+      bundling: {
+        externalModules: ['@aws-sdk/client-s3'],  // keep AWS SDK v3 out
+        // (optional) ensure ffmpeg wrapper is bundled:
+        nodeModules: ['fluent-ffmpeg'],
+      },
+    });
+    // Grant read/write access to the Lambda
+    bucket.grantReadWrite(postProcessingLambda);
+    // Trigger post-processing when new file is uploaded to 'uploads/'
+    bucket.addEventNotification(
+      s3.EventType.OBJECT_CREATED,
+      new s3n.LambdaDestination(postProcessingLambda),
+      { prefix: 'uploads/' }
+    );
+
+    // API Gateway
     const api = new apigateway.RestApi(this, 'VideoUploadAPI', {
       restApiName: 'Video Upload Service',
     });

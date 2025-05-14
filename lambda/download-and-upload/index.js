@@ -25,7 +25,7 @@ exports.handler = async (event) => {
     client: s3,
     params: {
       Bucket: bucketName,
-      Key: filename,
+      Key: `uploads/${filename}`,
       Body: responseStream,
     },
   });
