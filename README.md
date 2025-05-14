@@ -1,8 +1,12 @@
 # Welcome to your CDK TypeScript project
 
-This is a blank project for CDK development with TypeScript.
+This is a demo project investigating scalable architecture for video upload and post processing.
+It uses streaming to download files directly into S3.
 
-The `cdk.json` file tells the CDK Toolkit how to execute your app.
+Additionly, this includes post-processing which will:
+* Generate and update thumbnail
+
+All the files are available via Cloudfront CDN.
 
 ## Useful commands
 
