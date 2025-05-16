@@ -6,6 +6,8 @@ It uses streaming to download files directly into S3.
 Additionly, this includes post-processing which will:
 * Generate and update thumbnail
 
+In case of failed post-processing, there is DLQ in place to handle errors and retries.
+
 All the files are available via Cloudfront CDN.
 
 ## Useful commands

@@ -1,13 +1,16 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
-import * as s3n from 'aws-cdk-lib/aws-s3-notifications'
+import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import { join } from 'path';
+import * as destinations from 'aws-cdk-lib/aws-lambda-destinations';
+import { Duration } from 'aws-cdk-lib';
 
 export class VideoUploadServiceStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -98,6 +101,20 @@ export class VideoUploadServiceStack extends cdk.Stack {
     });
 
     usagePlan.addApiKey(key);
+
+    const postProcessingDlq = new sqs.Queue(this, 'PostProcessingDLQ', {
+      retentionPeriod: Duration.days(14),
+      visibilityTimeout: Duration.minutes(5),
+    });
+
+    new lambda.EventInvokeConfig(this, 'PostProcessingInvokeConfig', {
+      function: postProcessingLambda,
+      // send failures to the SQS DLQ
+      onFailure: new destinations.SqsDestination(postProcessingDlq),
+      // optionally tune retry attempts and age
+      retryAttempts: 2,
+      maxEventAge: Duration.hours(1),
+    });
 
     // Output API endpoint
     new cdk.CfnOutput(this, 'UploadEndpoint', {
