@@ -11,6 +11,7 @@ import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import { join } from 'path';
 import * as destinations from 'aws-cdk-lib/aws-lambda-destinations';
 import { Duration } from 'aws-cdk-lib';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 
 export class VideoUploadServiceStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -62,7 +63,8 @@ export class VideoUploadServiceStack extends cdk.Stack {
       timeout: cdk.Duration.minutes(2),
       environment: {
         BUCKET_NAME: bucket.bucketName,
-        FFMPEG_PATH: '/opt/bin/ffmpeg', // from your layer
+        FFMPEG_PATH: '/opt/bin/ffmpeg',
+        FFPROBE_PATH: '/opt/bin/ffprobe',
       },
       layers: [ffmpegLayer],
       bundling: {
@@ -115,6 +117,24 @@ export class VideoUploadServiceStack extends cdk.Stack {
       retryAttempts: 2,
       maxEventAge: Duration.hours(1),
     });
+
+    // Create a metadata table
+    const metadataTable = new dynamodb.Table(this, 'VideoMetadata', {
+      partitionKey: { name: 'videoId', type: dynamodb.AttributeType.STRING },
+      sortKey:      { name: 'uploadTs', type: dynamodb.AttributeType.NUMBER },
+      timeToLiveAttribute: 'expireAt',
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    metadataTable.addGlobalSecondaryIndex({
+      indexName: 'ByResolution',
+      partitionKey: { name: 'resolution', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    metadataTable.grantWriteData(postProcessingLambda);
+
+    postProcessingLambda.addEnvironment('METADATA_TABLE', metadataTable.tableName);
 
     // Output API endpoint
     new cdk.CfnOutput(this, 'UploadEndpoint', {
