@@ -6,31 +6,17 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
-import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
-import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import { join } from 'path';
 import * as destinations from 'aws-cdk-lib/aws-lambda-destinations';
 import { Duration } from 'aws-cdk-lib';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import { VideoDeliveryConstruct } from './video-service-constructs/delivery-construct';
 
 export class VideoUploadServiceStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    const oai = new cloudfront.OriginAccessIdentity(this, 'OAI');
-    const bucket = new s3.Bucket(this, 'VideoBucket', {
-      // If your files are public
-      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-    });
-
-    // Create a CloudFront distribution pointing to S3 bucket
-    const distribution = new cloudfront.Distribution(this, 'VideoCDN', {
-      defaultBehavior: {
-        origin: new origins.S3Origin(bucket, { originAccessIdentity: oai }),
-        viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-      },
-    });
+    const delivery = new VideoDeliveryConstruct(this, 'Delivery');
 
     //lambda layer for ffmpeg
     const ffmpegLayer = new lambda.LayerVersion(this, 'FfmpegLayer', {
@@ -47,13 +33,13 @@ export class VideoUploadServiceStack extends cdk.Stack {
       memorySize: 10240, // 10 GB
       ephemeralStorageSize: cdk.Size.gibibytes(10),
       environment: {
-        BUCKET_NAME: bucket.bucketName,
-        CLOUDFRONT_DOMAIN: distribution.domainName,
+        BUCKET_NAME: delivery.bucket.bucketName,
+        CLOUDFRONT_DOMAIN: delivery.distribution.domainName,
       }
     });
 
     // Allow lambda to write to the S3 bucket
-    bucket.grantPut(videoLambda);
+    delivery.bucket.grantPut(videoLambda);
 
     const postProcessingLambda = new NodejsFunction(this, 'PostProcessingLambda', {
       runtime: lambda.Runtime.NODEJS_22_X,
@@ -62,7 +48,7 @@ export class VideoUploadServiceStack extends cdk.Stack {
       memorySize: 1024,
       timeout: cdk.Duration.minutes(2),
       environment: {
-        BUCKET_NAME: bucket.bucketName,
+        BUCKET_NAME: delivery.bucket.bucketName,
         FFMPEG_PATH: '/opt/bin/ffmpeg',
         FFPROBE_PATH: '/opt/bin/ffprobe',
       },
@@ -74,9 +60,9 @@ export class VideoUploadServiceStack extends cdk.Stack {
       },
     });
     // Grant read/write access to the Lambda
-    bucket.grantReadWrite(postProcessingLambda);
+    delivery.bucket.grantReadWrite(postProcessingLambda);
     // Trigger post-processing when new file is uploaded to 'uploads/'
-    bucket.addEventNotification(
+    delivery.bucket.addEventNotification(
       s3.EventType.OBJECT_CREATED,
       new s3n.LambdaDestination(postProcessingLambda),
       { prefix: 'uploads/' }
@@ -142,7 +128,7 @@ export class VideoUploadServiceStack extends cdk.Stack {
     });
 
     new cdk.CfnOutput(this, 'CDNUrl', {
-      value: `https://${distribution.domainName}`,
+      value: `https://${delivery.distribution.domainName}`,
     });
   }
 }
