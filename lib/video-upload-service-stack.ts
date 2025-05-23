@@ -1,16 +1,8 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
-import * as s3 from 'aws-cdk-lib/aws-s3';
-import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
-import * as sqs from 'aws-cdk-lib/aws-sqs';
-import * as lambda from 'aws-cdk-lib/aws-lambda';
-import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
-import * as apigateway from 'aws-cdk-lib/aws-apigateway';
-import { join } from 'path';
-import * as destinations from 'aws-cdk-lib/aws-lambda-destinations';
-import { Duration } from 'aws-cdk-lib';
-import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import { VideoDeliveryConstruct } from './video-service-constructs/delivery-construct';
+import { VideoUploadConstruct } from './video-service-constructs/upload-construct';
+import { VideoProcessingConstruct } from './video-service-constructs/processing-construct';
 
 export class VideoUploadServiceStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -18,113 +10,19 @@ export class VideoUploadServiceStack extends cdk.Stack {
 
     const delivery = new VideoDeliveryConstruct(this, 'Delivery');
 
-    //lambda layer for ffmpeg
-    const ffmpegLayer = new lambda.LayerVersion(this, 'FfmpegLayer', {
-      code: lambda.Code.fromAsset(join(__dirname, '../lambda-layers/ffmpeg')),
-      compatibleRuntimes: [lambda.Runtime.NODEJS_22_X],
-      description: 'FFmpeg binary for thumbnail generation',
+    const uploader = new VideoUploadConstruct(this, 'Uploader', {
+      bucket: delivery.bucket,
+      distribution: delivery.distribution,
     });
 
-    const videoLambda = new lambda.Function(this, 'DownloadAndUploadLambda', {
-      runtime: lambda.Runtime.NODEJS_22_X,
-      handler: 'index.handler',
-      code: lambda.Code.fromAsset(join(__dirname, '../lambda/download-and-upload')),
-      timeout: cdk.Duration.minutes(15),
-      memorySize: 10240, // 10 GB
-      ephemeralStorageSize: cdk.Size.gibibytes(10),
-      environment: {
-        BUCKET_NAME: delivery.bucket.bucketName,
-        CLOUDFRONT_DOMAIN: delivery.distribution.domainName,
-      }
+    // 3️⃣ Post-processing pipeline
+    new VideoProcessingConstruct(this, 'Processor', {
+      bucket: delivery.bucket,
     });
-
-    // Allow lambda to write to the S3 bucket
-    delivery.bucket.grantPut(videoLambda);
-
-    const postProcessingLambda = new NodejsFunction(this, 'PostProcessingLambda', {
-      runtime: lambda.Runtime.NODEJS_22_X,
-      entry: join(__dirname, '../lambda/post-processing/index.js'),
-      handler: 'handler',
-      memorySize: 1024,
-      timeout: cdk.Duration.minutes(2),
-      environment: {
-        BUCKET_NAME: delivery.bucket.bucketName,
-        FFMPEG_PATH: '/opt/bin/ffmpeg',
-        FFPROBE_PATH: '/opt/bin/ffprobe',
-      },
-      layers: [ffmpegLayer],
-      bundling: {
-        externalModules: ['@aws-sdk/client-s3'],  // keep AWS SDK v3 out
-        // (optional) ensure ffmpeg wrapper is bundled:
-        nodeModules: ['fluent-ffmpeg'],
-      },
-    });
-    // Grant read/write access to the Lambda
-    delivery.bucket.grantReadWrite(postProcessingLambda);
-    // Trigger post-processing when new file is uploaded to 'uploads/'
-    delivery.bucket.addEventNotification(
-      s3.EventType.OBJECT_CREATED,
-      new s3n.LambdaDestination(postProcessingLambda),
-      { prefix: 'uploads/' }
-    );
-
-    // API Gateway
-    const api = new apigateway.RestApi(this, 'VideoUploadAPI', {
-      restApiName: 'Video Upload Service',
-    });
-
-    const upload = api.root.addResource('upload');
-    upload.addMethod(
-      'POST',
-      new apigateway.LambdaIntegration(videoLambda),
-      {
-        apiKeyRequired: true,
-      });
-
-    const key = api.addApiKey('UploadApiKey');
-    const usagePlan = api.addUsagePlan('UploadUsagePlan', {
-      name: 'FreeTierPlan',
-      throttle: { rateLimit: 5, burstLimit: 2 },
-      apiStages: [{ api, stage: api.deploymentStage }],
-    });
-
-    usagePlan.addApiKey(key);
-
-    const postProcessingDlq = new sqs.Queue(this, 'PostProcessingDLQ', {
-      retentionPeriod: Duration.days(14),
-      visibilityTimeout: Duration.minutes(5),
-    });
-
-    new lambda.EventInvokeConfig(this, 'PostProcessingInvokeConfig', {
-      function: postProcessingLambda,
-      // send failures to the SQS DLQ
-      onFailure: new destinations.SqsDestination(postProcessingDlq),
-      // optionally tune retry attempts and age
-      retryAttempts: 2,
-      maxEventAge: Duration.hours(1),
-    });
-
-    // Create a metadata table
-    const metadataTable = new dynamodb.Table(this, 'VideoMetadata', {
-      partitionKey: { name: 'videoId', type: dynamodb.AttributeType.STRING },
-      sortKey:      { name: 'uploadTs', type: dynamodb.AttributeType.NUMBER },
-      timeToLiveAttribute: 'expireAt',
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-    });
-
-    metadataTable.addGlobalSecondaryIndex({
-      indexName: 'ByResolution',
-      partitionKey: { name: 'resolution', type: dynamodb.AttributeType.STRING },
-      projectionType: dynamodb.ProjectionType.ALL,
-    });
-
-    metadataTable.grantWriteData(postProcessingLambda);
-
-    postProcessingLambda.addEnvironment('METADATA_TABLE', metadataTable.tableName);
 
     // Output API endpoint
     new cdk.CfnOutput(this, 'UploadEndpoint', {
-      value: api.url + 'upload',
+      value: uploader.api.url + 'upload',
     });
 
     new cdk.CfnOutput(this, 'CDNUrl', {
